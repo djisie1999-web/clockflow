@@ -20,14 +20,14 @@ async function main() {
     },
   });
 
-  // Create admin user
-  const passwordHash = await bcrypt.hash("Admin123!", 12);
+  // Create admin user (test@admin.com / admin123)
+  const passwordHash = await bcrypt.hash("admin123", 12);
   const admin = await prisma.user.upsert({
-    where: { email: "admin@demo.com" },
-    update: {},
+    where: { email: "test@admin.com" },
+    update: { passwordHash },
     create: {
       tenantId: tenant.id,
-      email: "admin@demo.com",
+      email: "test@admin.com",
       passwordHash,
       firstName: "Admin",
       lastName: "User",
@@ -138,7 +138,7 @@ async function main() {
 
   console.log("Seed complete!");
   console.log(`  Tenant: ${tenant.name} (${tenant.slug})`);
-  console.log(`  Admin: ${admin.email} / Admin123!`);
+  console.log(`  Admin: ${admin.email} / admin123`);
   console.log(`  Employees: ${employees.length}`);
 }
 

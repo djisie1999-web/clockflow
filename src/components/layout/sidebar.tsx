@@ -16,6 +16,7 @@ import {
   CreditCard,
   ChevronLeft,
   ChevronRight,
+  UserCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "./logo";
@@ -28,6 +29,11 @@ const navItems = [
     title: "Dashboard",
     href: "/dashboard",
     icon: LayoutDashboard,
+  },
+  {
+    title: "Who's In",
+    href: "/whos-in",
+    icon: UserCheck,
   },
   {
     title: "Employees",
