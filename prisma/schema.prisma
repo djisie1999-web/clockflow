@@ -1,0 +1,481 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum PlanTier {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  CASUAL
+}
+
+enum PayFrequency {
+  WEEKLY
+  BIWEEKLY
+  FOUR_WEEKLY
+  MONTHLY
+}
+
+enum ClockingType {
+  CLOCK_IN
+  CLOCK_OUT
+  BREAK_START
+  BREAK_END
+}
+
+enum ClockingSource {
+  MANUAL
+  PORTAL
+  KIOSK
+  MOBILE
+  API
+}
+
+enum LeaveRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum OvertimeTriggerType {
+  DAILY
+  WEEKLY
+  PERIOD
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  EXPORT
+  APPROVE
+  REJECT
+  IMPORT
+}
+
+enum ReportType {
+  ATTENDANCE
+  HOURS
+  OVERTIME
+  LATE_ARRIVALS
+  LEAVE_BALANCE
+  PAYROLL
+  PERIOD_TOTALS
+}
+
+// ============================================================
+// TENANTS
+// ============================================================
+
+model Tenant {
+  id                   String             @id @default(cuid())
+  name                 String
+  slug                 String             @unique
+  logo                 String?
+  primaryColor         String             @default("#0F766E")
+  timezone             String             @default("Europe/London")
+  country              String             @default("GB")
+
+  // Billing
+  planTier             PlanTier           @default(FREE)
+  subscriptionStatus   SubscriptionStatus @default(TRIAL)
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  employeeLimit        Int                @default(10)
+  trialEndsAt          DateTime?
+
+  // Onboarding
+  onboardingComplete   Boolean            @default(false)
+
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  // Relations
+  users                User[]
+  departments          Department[]
+  employees            Employee[]
+  shiftPatterns        ShiftPattern[]
+  clockings            Clocking[]
+  leaveTypes           LeaveType[]
+  overtimeRules        OvertimeRule[]
+  reportPresets        ReportPreset[]
+  auditLogs            AuditLog[]
+  leaveRequests        LeaveRequest[]
+
+  @@map("tenants")
+}
+
+// ============================================================
+// USERS (Authentication)
+// ============================================================
+
+model User {
+  id              String    @id @default(cuid())
+  tenantId        String?
+  tenant          Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  email           String    @unique
+  passwordHash    String
+  firstName       String
+  lastName        String
+  role            UserRole  @default(EMPLOYEE)
+
+  isActive        Boolean   @default(true)
+  emailVerified   Boolean   @default(false)
+  refreshToken    String?
+  lastLoginAt     DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  leaveApprovals  LeaveRequest[] @relation("LeaveApprover")
+  auditLogs       AuditLog[]
+  reportPresets   ReportPreset[]
+
+  @@index([tenantId])
+  @@index([email])
+  @@map("users")
+}
+
+// ============================================================
+// DEPARTMENTS
+// ============================================================
+
+model Department {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String
+  code        String?
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  employees   Employee[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("departments")
+}
+
+// ============================================================
+// EMPLOYEES
+// ============================================================
+
+model Employee {
+  id                  String         @id @default(cuid())
+  tenantId            String
+  tenant              Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  departmentId        String?
+  department          Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  employeeNumber      String
+  firstName           String
+  lastName            String
+  email               String?
+  phone               String?
+  dateOfBirth         DateTime?
+  nationalInsurance   String?
+
+  employmentType      EmploymentType @default(FULL_TIME)
+  startDate           DateTime
+  endDate             DateTime?
+  payRate             Decimal        @db.Decimal(10, 2)
+  payFrequency        PayFrequency   @default(MONTHLY)
+
+  // Portal self-service
+  portalPin           String?
+
+  isActive            Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  // Relations
+  shiftAssignments    ShiftAssignment[]
+  clockings           Clocking[]
+  leaveAllowances     LeaveAllowance[]
+  leaveRequests       LeaveRequest[]
+
+  @@unique([tenantId, employeeNumber])
+  @@index([tenantId])
+  @@index([departmentId])
+  @@map("employees")
+}
+
+// ============================================================
+// SHIFT PATTERNS & ASSIGNMENTS
+// ============================================================
+
+model ShiftPattern {
+  id                    String   @id @default(cuid())
+  tenantId              String
+  tenant                Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name                  String
+  startTime             String   // "09:00"
+  endTime               String   // "17:00"
+  days                  Json     // [1,2,3,4,5] = Mon-Fri
+
+  breakDuration         Int      @default(0) // minutes
+  breakPaid             Boolean  @default(false)
+  breakTriggerMinutes   Int?     // break only if shift >= this
+
+  nightShift            Boolean  @default(false)
+  color                 String   @default("#3B82F6")
+  expectedHoursPerDay   Decimal  @db.Decimal(5, 2)
+
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  assignments           ShiftAssignment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("shift_patterns")
+}
+
+model ShiftAssignment {
+  id              String       @id @default(cuid())
+  employeeId      String
+  employee        Employee     @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shiftPatternId  String
+  shiftPattern    ShiftPattern @relation(fields: [shiftPatternId], references: [id], onDelete: Cascade)
+
+  effectiveFrom   DateTime
+  effectiveTo     DateTime?
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([employeeId])
+  @@index([shiftPatternId])
+  @@map("shift_assignments")
+}
+
+// ============================================================
+// CLOCKINGS
+// ============================================================
+
+model Clocking {
+  id                String        @id @default(cuid())
+  tenantId          String
+  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId        String
+  employee          Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  type              ClockingType
+  timestamp         DateTime
+  date              DateTime      @db.Date // working date
+
+  source            ClockingSource @default(MANUAL)
+
+  // Location & device
+  latitude          Float?
+  longitude         Float?
+  photoUrl          String?
+  deviceInfo        String?
+
+  // Edit tracking
+  originalTimestamp DateTime?
+  editedBy          String?
+  editedAt          DateTime?
+  notes             String?
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([tenantId, date])
+  @@index([employeeId, date])
+  @@index([employeeId, timestamp])
+  @@map("clockings")
+}
+
+// ============================================================
+// LEAVE MANAGEMENT
+// ============================================================
+
+model LeaveType {
+  id               String   @id @default(cuid())
+  tenantId         String
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name             String
+  color            String   @default("#10B981")
+  isPaid           Boolean  @default(true)
+  requiresApproval Boolean  @default(true)
+  isActive         Boolean  @default(true)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  allowances       LeaveAllowance[]
+  requests         LeaveRequest[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("leave_types")
+}
+
+model LeaveAllowance {
+  id              String    @id @default(cuid())
+  employeeId      String
+  employee        Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveTypeId     String
+  leaveType       LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+
+  year            Int
+  totalDays       Decimal   @db.Decimal(5, 1)
+  usedDays        Decimal   @default(0) @db.Decimal(5, 1)
+  carriedOver     Decimal   @default(0) @db.Decimal(5, 1)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([employeeId, leaveTypeId, year])
+  @@index([employeeId])
+  @@map("leave_allowances")
+}
+
+model LeaveRequest {
+  id               String             @id @default(cuid())
+  tenantId         String
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId       String
+  employee         Employee           @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  leaveTypeId      String
+  leaveType        LeaveType          @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+
+  startDate        DateTime           @db.Date
+  endDate          DateTime           @db.Date
+  halfDay          Boolean            @default(false)
+  totalDays        Decimal            @db.Decimal(5, 1)
+
+  status           LeaveRequestStatus @default(PENDING)
+  reason           String?
+  approvedById     String?
+  approvedBy       User?              @relation("LeaveApprover", fields: [approvedById], references: [id])
+  approvedAt       DateTime?
+  rejectionReason  String?
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([tenantId, status])
+  @@index([employeeId])
+  @@index([leaveTypeId])
+  @@index([startDate, endDate])
+  @@map("leave_requests")
+}
+
+// ============================================================
+// OVERTIME RULES
+// ============================================================
+
+model OvertimeRule {
+  id              String              @id @default(cuid())
+  tenantId        String
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name            String
+  triggerType     OvertimeTriggerType
+  thresholdHours  Decimal             @db.Decimal(5, 2)
+  multiplier      Decimal             @db.Decimal(4, 2)
+  priority        Int                 @default(0)
+
+  exemptDays      Json                @default("[]") // e.g. ["Saturday","Sunday"]
+  isActive        Boolean             @default(true)
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([tenantId])
+  @@map("overtime_rules")
+}
+
+// ============================================================
+// AUDIT LOG
+// ============================================================
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  tenantId    String?
+  tenant      Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action      AuditAction
+  entityType  String
+  entityId    String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+
+  createdAt   DateTime    @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// REPORT PRESETS
+// ============================================================
+
+model ReportPreset {
+  id          String     @id @default(cuid())
+  tenantId    String
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String
+  reportType  ReportType
+  filters     Json
+  createdById String
+  createdBy   User       @relation(fields: [createdById], references: [id])
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("report_presets")
+}
